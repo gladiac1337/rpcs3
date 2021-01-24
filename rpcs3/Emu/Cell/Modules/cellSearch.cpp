@@ -8,17 +8,7 @@
 
 #include "cellSearch.h"
 #include "Utilities/StrUtil.h"
-
-#ifdef _MSC_VER
-#pragma warning(push, 0)
-#else
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wold-style-cast"
-#endif
-extern "C" {
-#include "libavformat/avformat.h"
-#include "libavutil/dict.h"
-}
+#include "util/avmedia.hpp"
 
 LOG_CHANNEL(cellSearch);
 
@@ -578,65 +568,37 @@ error_code cellSearchStartContentSearchInList(vm::cptr<CellSearchContentId> list
 						curr_find->type = CELL_SEARCH_CONTENTTYPE_MUSIC;
 						CellSearchMusicInfo& info = curr_find->data.music;
 
-						// Only print FFMPEG errors, fatals and panics
-						av_log_set_level(AV_LOG_ERROR);
-
-						AVDictionary* av_dict_opts = nullptr;
-						av_dict_set(&av_dict_opts, "probesize", "96", 0);
-						AVFormatContext* av_format_ctx = nullptr;
-						av_format_ctx = avformat_alloc_context();
-
-						// Open input file
-						if (avformat_open_input(&av_format_ctx, (vfs::get(vpath) + "/" + item.name).c_str(), 0, &av_dict_opts) < 0)
+						avmedia::audio_info ainfo((vfs::get(vpath) + "/" + item.name).c_str());
+						if (ainfo.has_error())
 						{
-							// Failed to open file
-							av_dict_free(&av_dict_opts);
-							avformat_free_context(av_format_ctx);
 							continue;
 						}
-						av_dict_free(&av_dict_opts);
+						cellSearch.todo("TESTY get_filepath: %s)", ainfo.get_filepath());
+						cellSearch.todo("TESTY get_bitrate: %i)", ainfo.get_bitrate());
+						cellSearch.todo("TESTY get_quantizationBitrate: %i)", ainfo.get_quantizationBitrate());
+						cellSearch.todo("TESTY get_samplingRate: %i)", ainfo.get_samplingRate());
+						cellSearch.todo("TESTY get_duration: %i)", ainfo.get_duration());
+						cellSearch.todo("TESTY get_releasedYear: %i)", ainfo.get_releasedYear());
+						cellSearch.todo("TESTY get_codecId: %i)", ainfo.get_codecId());
+						cellSearch.todo("TESTY get_trackNumber: %i)", ainfo.get_trackNumber());
+						cellSearch.todo("TESTY get_album: %s)", ainfo.get_album());
+						cellSearch.todo("TESTY get_title: %s)", ainfo.get_title());
+						cellSearch.todo("TESTY get_artist: %s)", ainfo.get_artist());
+						cellSearch.todo("TESTY get_genre: %s)", ainfo.get_genre());
 
-						// Find stream information
-						if (avformat_find_stream_info(av_format_ctx, 0) < 0)
-						{
-							// Failed to load stream information
-							avformat_free_context(av_format_ctx);
-							continue;
-						}
-
-						// Derive first audio stream id from avformat context
-						int stream_index = -1;
-						for (uint i = 0; i < av_format_ctx->nb_streams; i++)
-						{
-							if (av_format_ctx->streams[i]->codecpar->codec_type == AVMEDIA_TYPE_AUDIO)
-							{
-								stream_index = i;
-								break;
-							}
-						}
-						if (stream_index == -1)
-						{
-							// Failed to find an audio stream
-							avformat_free_context(av_format_ctx);
-							continue;
-						}
-
-						AVStream* stream = av_format_ctx->streams[stream_index];
-						AVCodecParameters* codec = stream->codecpar;
-
-						info.bitrate = codec->bit_rate / 1000;  // TODO: Assumption, verify value
-						info.quantizationBitrate = codec->bit_rate / 1000;  // TODO: Assumption, verify value
-						info.samplingRate = codec->sample_rate;  // TODO: Assumption, verify value
+						info.bitrate = ainfo.get_bitrate();
+						info.quantizationBitrate = ainfo.get_quantizationBitrate();
+						info.samplingRate = ainfo.get_samplingRate();
 						info.drmEncrypted = 0; // Needs to be 0 or it wont be accepted
-						info.duration = av_format_ctx->duration / 1000;  // TODO: Assumption, verify value
-						info.releasedYear = 0; // TODO: Use "date" id3 tag for this
+						info.duration = ainfo.get_duration();
+						info.releasedYear = ainfo.get_releasedYear();
 						info.size = item.size;
 						info.playCount = 0; // we do not track this for now
 						info.lastPlayedDate = 0;  // we do not track this for now
 						info.importedDate = 0; // we do not track this for now
 						info.status = CELL_SEARCH_CONTENTSTATUS_AVAILABLE; // CellSearchContentStatus
 
-						switch (codec->codec_id) // AVCodecID
+						switch (ainfo.get_codecId()) // AVCodecID
 						{
 						case AV_CODEC_ID_MP3:
 							info.codec = CELL_SEARCH_CODEC_MP3; // CellSearchCodec
@@ -663,21 +625,13 @@ error_code cellSearchStartContentSearchInList(vm::cptr<CellSearchContentId> list
 							break;
 						}
 
-						AVDictionaryEntry *tag;
+						info.trackNumber = ainfo.get_trackNumber();
+
 						std::string value;
 
-						info.trackNumber = 0;
-						tag = av_dict_get(av_format_ctx->metadata, "track", 0, AV_DICT_IGNORE_SUFFIX);
-						if (tag != nullptr)
+						if (!ainfo.get_album().empty())
 						{
-							std::string tmp(tag->value);
-							info.trackNumber = stoi(tmp.substr(0, tmp.find("/")));
-						}
-
-						tag = av_dict_get(av_format_ctx->metadata, "album", 0, AV_DICT_IGNORE_SUFFIX);
-						if (tag != nullptr)
-						{
-							value = tag->value;
+							value = ainfo.get_album().c_str();
 							if (value.size() > CELL_SEARCH_TITLE_LEN_MAX)
 							{
 								value.resize(CELL_SEARCH_TITLE_LEN_MAX);
@@ -689,10 +643,9 @@ error_code cellSearchStartContentSearchInList(vm::cptr<CellSearchContentId> list
 							strcpy_trunc(info.albumTitle, "Unknown Album");
 						}
 
-						tag = av_dict_get(av_format_ctx->metadata, "title", 0, AV_DICT_IGNORE_SUFFIX);
-						if (tag != nullptr)
+						if (!ainfo.get_title().empty())
 						{
-							value = tag->value;
+							value = ainfo.get_title().c_str();
 							if (value.size() > CELL_SEARCH_TITLE_LEN_MAX)
 							{
 								value.resize(CELL_SEARCH_TITLE_LEN_MAX);
@@ -714,10 +667,9 @@ error_code cellSearchStartContentSearchInList(vm::cptr<CellSearchContentId> list
 							}
 						}
 
-						tag = av_dict_get(av_format_ctx->metadata, "artist", 0, AV_DICT_IGNORE_SUFFIX);
-						if (tag != nullptr)
+						if (!ainfo.get_artist().empty())
 						{
-							value = tag->value;
+							value = ainfo.get_artist().c_str();
 							if (value.size() > CELL_SEARCH_TITLE_LEN_MAX)
 							{
 								value.resize(CELL_SEARCH_TITLE_LEN_MAX);
@@ -729,10 +681,9 @@ error_code cellSearchStartContentSearchInList(vm::cptr<CellSearchContentId> list
 							strcpy_trunc(info.artistName, "Unknown Artist");
 						}
 
-						tag = av_dict_get(av_format_ctx->metadata, "genre", 0, AV_DICT_IGNORE_SUFFIX);
-						if (tag != nullptr)
+						if (!ainfo.get_genre().empty())
 						{
-							value = tag->value;
+							value = ainfo.get_genre().c_str();
 							if (value.size() > CELL_SEARCH_TITLE_LEN_MAX)
 							{
 								value.resize(CELL_SEARCH_TITLE_LEN_MAX);
@@ -743,9 +694,6 @@ error_code cellSearchStartContentSearchInList(vm::cptr<CellSearchContentId> list
 						{
 							strcpy_trunc(info.genreName, "Unknown Genre");
 						}
-
-						avformat_close_input(&av_format_ctx);
-						avformat_free_context(av_format_ctx);
 					}
 					else if (type == CELL_SEARCH_CONTENTSEARCHTYPE_PHOTO_ALL)
 					{
